@@ -13,6 +13,12 @@ import logging
 logging.getLogger("rex").setLevel("DEBUG")
 logging.getLogger("povsim").setLevel("INFO")
 
+def convertHex(char):
+    hData = hex(ord(char)).replace('0x','').replace('L','')
+    if len(hData) == 1:
+        hData = '0'+ hData
+    return hData
+
 def _do_pov_test(pov, enable_randomness=True):
     ''' Test a POV '''
     for _ in range(10):
@@ -24,21 +30,28 @@ def test_legit_00001():
     '''
     Test exploitation of legit_00001 given a good crash.
     '''
-
-    crash = '1002000041414141414141414141414d41414141414141414141414141414141001041414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141412a4141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141604141414141414141414102ffffff410080ffff4141410d807f412641414141414141414141414141414141414141413b41415f414141412b41414141417f4141414141412441414141416041f8414141414141c1414139410010000200005541415f4141b9b9b9b1b9d4b9b9b9b99cb99ec4b9b9b941411f4141414141414114414141514141414141414141414141454141494141414141414141404141414141414d414124a0414571717171717171717171717171717171616161616161616161616161616161006161515e41414141412041414141412125414141304141492f41414141492f4141414541412c4141410037373737373737373737414141414141413a41c4b9b9b9b901b9413c41414141414141414141414141412133414141414141412f414141414141414164414141414141414141414141417f41414100010000000055414b4100124141414141414141'.decode('hex')
-
-    crash = rex.Crash(os.path.join(bin_location, "tests/defcon24/legit_00001"), crash)
-
-    arsenal = crash.exploit()
-
-    nose.tools.assert_true(len(arsenal.register_setters) >= 2)
-    nose.tools.assert_true(len(arsenal.leakers) >= 1)
-
-    for reg_setter in arsenal.register_setters:
-        nose.tools.assert_true(_do_pov_test(reg_setter))
-
-    for leaker in arsenal.leakers:
-        nose.tools.assert_true(_do_pov_test(leaker))
+    crashes_dir="/home/supermole/tools/out/crashes"
+    crashes =os.listdir(crashes_dir)
+    crash_file = None
+    for crash_name in crashes:
+        crash_name = os.path.join(crashes_dir,crash_name)
+        with  open(crash_name) as fp:
+            content = fp.read( )   
+        result = ''
+        for index in range(0, len(content)):
+            result = result + '\\x' + convertHex(content[index])   
+        crash = result
+        crash = rex.Crash("/home/supermole/CQE/my-cb/examples/CADET_00001/bin/CADET_00001",crash=crash,pov_file=crash_file)
+        #arsenal = crash.exploit()
+        #nose.tools.assert_true(crash.one_of(Vulnerability.ARBITRARY_READ))
+        #nose.tools.assert_false(crash.exploitable())
+        if nose.tools.assert_true(crash.explorable()):
+            founded_read_crash = crash_name
+            break
+    
+        #crash.explore()
+        # after exploring the crash we should see that it is exploitable
+        #nose.tools.assert_true(crash.exploitable)            
 
 def test_legit_00003():
     '''
@@ -174,16 +187,10 @@ def test_linux_stacksmash():
 
     crash = "A" * 227
     crash = rex.Crash(os.path.join(bin_location, "tests/i386/vuln_stacksmash"), crash)
+    crash.explore()
     exploit = crash.exploit()
 
-    # make sure we're able to exploit it in all possible ways
-    nose.tools.assert_equal(len(exploit.arsenal), 3)
-    nose.tools.assert_true('rop_to_system' in exploit.arsenal)
-    nose.tools.assert_true('call_shellcode' in exploit.arsenal)
-    nose.tools.assert_true('call_jmp_sp_shellcode' in exploit.arsenal)
-
-    # TODO test exploit with pwntool's 'process'
-
+   
 def test_cgc_type1_rop_stacksmash():
     '''
     Test creation of type1 exploit on 0b32aa01_01 ('Palindrome') with rop. The vulnerability exposed by the string `crash` is

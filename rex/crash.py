@@ -13,7 +13,7 @@ from .trace_additions import ChallRespInfo, ZenPlugin
 from rex.exploit import CannotExploit, CannotExplore, ExploitFactory, CGCExploitFactory
 from rex.vulnerability import Vulnerability
 from simuvex import SimMemoryError, s_options as so
-
+import simuvex
 
 class NonCrashingInput(Exception):
     pass
@@ -25,7 +25,7 @@ class Crash(object):
     '''
 
     def __init__(self, binary, crash=None, pov_file=None, aslr=None, constrained_addrs=None, crash_state=None,
-                 prev_path=None, hooks=None, format_infos=None, rop_cache_tuple=None, use_rop=True,
+                 prev_path=None, hooks=None, format_infos=None, rop_cache_tuple=None, use_rop=False,
                  explore_steps=0, angrop_object=None):
         '''
         :param binary: path to the binary which crashed
@@ -47,6 +47,7 @@ class Crash(object):
         self.crash  = crash
         self.pov_file = pov_file
         self.constrained_addrs = [ ] if constrained_addrs is None else constrained_addrs
+
         self.hooks = hooks
         self.explore_steps = explore_steps
 
@@ -54,7 +55,7 @@ class Crash(object):
             raise CannotExploit("Too many steps taken during crash exploration")
 
         self.project = angr.Project(binary)
-
+        
         # we search for ROP gadgets now to avoid the memory exhaustion bug in pypy
         # hash binary contents for rop cache name
         binhash = hashlib.md5(open(self.binary).read()).hexdigest()
@@ -100,13 +101,14 @@ class Crash(object):
             # optimized crash check
             if self.project.loader.main_bin.os == 'cgc':
 
-                if not tracer.Runner(binary, input=self.crash).crash_mode:
+                if not tracer.Runner(binary, input=crash,pov_file=self.pov_file).crash_mode:
                     if not tracer.Runner(binary, input=self.crash, report_bad_args=True).crash_mode:
                         l.warning("input did not cause a crash")
                         raise NonCrashingInput
 
             self._tracer = tracer.Tracer(binary, input=self.crash, pov_file=self.pov_file, resiliency=False,
-                                         hooks=self.hooks, add_options=add_options, remove_options=remove_options)
+                                         hooks=self.hooks, add_options=add_options, remove_options=remove_options,project=self.project)
+            
             ChallRespInfo.prep_tracer(self._tracer, format_infos)
             ZenPlugin.prep_tracer(self._tracer)
             prev, crash_state = self._tracer.run(constrained_addrs)
@@ -200,7 +202,7 @@ class Crash(object):
                 kwargs["blacklist_techniques"].add("explore_for_exploit")
             else:
                 kwargs["blacklist_techniques"] = {"explore_for_exploit"}
-
+     
         if self.os == 'cgc':
             exploit = CGCExploitFactory(self, **kwargs)
         else:
@@ -208,7 +210,7 @@ class Crash(object):
 
         return exploit
 
-    def exploit(self, blacklist_symbolic_explore=True, **kwargs):
+    def exploit(self, blacklist_symbolic_explore=True,**kwargs):
         '''
         craft an exploit for a crash
         '''
@@ -403,14 +405,27 @@ class Crash(object):
 
         read_addr = None
         constraint = None
-        for addr in largest_regions + pages:
-            read_addr = addr
+        succ_time = 0
+        for addr in pages + largest_regions:
             constraint = self.violating_action.addr == addr
-
             if self.state.se.satisfiable(extra_constraints=(constraint,)):
                 break
-
             constraint = None
+            
+        if constraint is None:
+            for addr2 in largest_regions:
+                constraint = self.violating_action.addr == addr2
+                constraint2 = self.state.memory.load(addr,4,endness='lend_LE') == (self.state.regs.sp + 0x30)
+                if self.state.se.satisfiable(extra_constraints=(constraint,constraint2)):
+                    break
+                constraint = None
+                
+            if constraint is None:
+                for offset in range(400):
+                    constraint = self.violating_action.addr == (self.state.regs.sp + offset)
+                    if self.state.se.satisfiable(extra_constraints=(constraint,)):
+                        break
+                    constraint = None
 
         if constraint is None:
             raise CannotExploit("unable to find suitable read address, cannot explore")
@@ -422,6 +437,7 @@ class Crash(object):
         l.info("starting a new crash exploration phase based off the crash at address 0x%x", self.violating_action.ins_addr)
 
         new_input = ChallRespInfo.atoi_dumps(self.state)
+        path_file = "/home/supermole/workspace/new_input"
         if path_file is not None:
             l.info("dumping new crash evading input into file '%s'", path_file)
             with open(path_file, 'w') as f:
@@ -442,7 +458,8 @@ class Crash(object):
         # at some writable memory
 
         # find a writable data segment
-
+           
+        
         elf_objects = self.project.loader.all_elf_objects
 
         assert len(elf_objects) > 0, "target binary is not ELF or CGC, unsupported by rex"
@@ -467,29 +484,30 @@ class Crash(object):
                     break
 
                 constraint = None
-
         if constraint is None:
             raise CannotExploit("Cannot point write at any writeable segments")
-
+        
         self.state.add_constraints(constraint)
         l.debug("constraining input to write to address %#x", write_addr)
-
+    
         l.info("starting a new crash exploration phase based off the crash at address %#x",
-                self.violating_action.ins_addr)
+                   self.violating_action.ins_addr)
         new_input = ChallRespInfo.atoi_dumps(self.state)
+        path_file = '/home/supermole/workspace/new_input'
         if path_file is not None:
             l.info("dumping new crash evading input into file '%s'", path_file)
             with open(path_file, 'w') as f:
                 f.write(new_input)
-
+    
         use_rop = False if self.rop is None else True
         self.__init__(self.binary,
-                new_input,
-                explore_steps=self.explore_steps + 1,
-                constrained_addrs=self.constrained_addrs + [self.violating_action],
-                use_rop=use_rop,
-                angrop_object=self.rop)
-
+                          new_input,
+                    explore_steps=self.explore_steps + 1,
+                    constrained_addrs=self.constrained_addrs + [self.violating_action],
+                    use_rop=use_rop,
+                    angrop_object=self.rop)        
+        
+        
     def copy(self):
         cp = Crash.__new__(Crash)
         cp.binary = self.binary
